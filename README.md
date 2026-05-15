@@ -44,7 +44,7 @@ python3 battery_symbolic_sindy.py
 ```
 *All generated plots and the final metrics CSV will be saved in the `reports/` directory.*
 
-## ☁️ How to Run on Google Colab
+## How to Run on Google Colab
 
 You can run this entire experiment in the cloud via Google Colab with zero local setup!
 
@@ -53,4 +53,4 @@ You can run this entire experiment in the cloud via Google Colab with zero local
 3. Simply click **"Run All"** in the Colab interface.
 
 ---
-*Developed for Academic Research in Cyber-Physical Systems & Battery Storage.*
+
