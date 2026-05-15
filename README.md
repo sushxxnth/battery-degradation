@@ -4,12 +4,12 @@ This repository contains an end-to-end experimental pipeline that applies **Symb
 
 It predicts both **State of Health (SOH)** and **Remaining Useful Life (RUL)** across different battery chemistries and testing profiles, utilizing the NASA PCoE and CALCE CS2 datasets.
 
-## 🌟 Key Features
+##  Key Features
 - **Self-Contained Data Pipeline**: Automatically parses, cleans, and engineers features from raw `.mat` files without external dependencies.
 - **Explainable AI (XAI)**: Instead of black-box neural networks, this pipeline discovers human-readable algebraic formulas governing capacity fade and internal resistance.
 - **Cross-Dataset Generalization**: Trains on early-life cycles and predicts late-stage degradation accurately across both NASA and CALCE cells simultaneously.
 
-## 📊 Results Summary
+## Results Summary
 
 The **SINDy-1 (Degree-2 Polynomial)** model achieved state-of-the-art accuracy in tracking SOH across unseen test cells:
 *   **NASA Dataset**: `RMSE = 0.0079` | `R² = 0.9843`
@@ -21,7 +21,7 @@ The pipeline successfully isolated the primary driver of degradation using Genet
 SOH = -0.102 × capacity_fade + 0.888
 ```
 
-## 🚀 How to Run Locally
+##  How to Run Locally
 
 ### 1. Prerequisites
 Ensure you have Python 3.8+ installed. 
