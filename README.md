@@ -32,9 +32,9 @@ cd battery-degradation
 ```
 
 ### 2. Install Dependencies
-Install the required scientific computing and machine learning libraries:
+Install the required scientific computing and machine learning libraries using the provided `requirements.txt` to ensure exact version matches:
 ```bash
-pip install numpy pandas matplotlib seaborn scikit-learn scipy gplearn pysindy
+pip install -r requirements.txt
 ```
 
 ### 3. Execute the Experiment
@@ -43,6 +43,13 @@ Run the main script. The script automatically handles data loading, model traini
 python3 battery_symbolic_sindy.py
 ```
 *All generated plots and the final metrics CSV will be saved in the `reports/` directory.*
+
+### 4. Reproduce Exact Results (No Training)
+To instantly view the exact results without retraining the models (guaranteeing bit-for-bit identical plots across different OS and CPU architectures), run:
+```bash
+python3 reproduce_results.py
+```
+*This uses the pre-computed predictions stored in `reports/saved_predictions.npz`.*
 
 ## How to Run on Google Colab
 
