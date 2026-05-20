@@ -780,6 +780,30 @@ def main():
                 
     plot_heatmap(df, os.path.join(REPORTS_DIR, 'feature_correlation_heatmap.png'))
 
+    # Save all predictions + test data for exact reproduction on any machine
+    save_data = {
+        'test_soh': test_df['SOH'].values,
+        'test_rul': test_df['RUL'].values,
+        'test_cycle': test_df['cycle_number'].values,
+        'test_cell_id': test_df['cell_id'].values,
+        'test_source': test_df['source'].values,
+    }
+    # SOH predictions per model
+    for name, preds in all_predictions.items():
+        save_data[f'pred_{name}'] = np.array(preds)
+    # RUL predictions
+    for name, (true, pred) in rul_results.items():
+        save_data[f'rul_true_{name}'] = np.array(true)
+        save_data[f'rul_pred_{name}'] = np.array(pred)
+    # Feature data for heatmap
+    heatmap_cols = [c for c in USED_FEATURES + ['SOH', 'RUL'] if c in df.columns]
+    save_data['heatmap_corr'] = df[heatmap_cols].corr().values
+    save_data['heatmap_labels'] = np.array(heatmap_cols)
+
+    npz_path = os.path.join(REPORTS_DIR, 'saved_predictions.npz')
+    np.savez(npz_path, **save_data)
+    print(f"  Saved predictions: {npz_path}")
+
     print("\nDone! All plots saved to:", REPORTS_DIR)
 
 
