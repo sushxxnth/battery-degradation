@@ -184,6 +184,45 @@ def prepare_sindy_data(df):
     return cell_data
 
 
+def _sindy_direct_predict(model, test_df, control_cols):
+    """Predict SOH directly from SINDy feature library (no ODE integration).
+    
+    This replaces model.simulate() with a stable point-wise algebraic
+    evaluation: SOH_pred[t] = SOH[t-1] + dt * (coeff @ feature_library(SOH[t-1], u[t-1]))
+    This is deterministic and numerically stable across all machines.
+    """
+    all_true, all_pred = [], []
+    coeffs = model.coefficients()  # shape (1, n_features)
+    lib = model.feature_library
+
+    for cell_id, grp in test_df.groupby('cell_id'):
+        grp = grp.sort_values('cycle_number').reset_index(drop=True)
+        u = grp[control_cols].ffill().bfill().values
+        soh_true = grp['SOH'].values
+        n = len(soh_true)
+
+        soh_pred = np.zeros(n)
+        soh_pred[0] = soh_true[0]  # start from known true initial SOH
+
+        for i in range(1, n):
+            # Build state-control matrix for this timestep
+            x_state = np.array([[soh_pred[i - 1]]])
+            u_state = u[i - 1:i]
+            try:
+                xu = np.hstack([x_state, u_state])
+                phi = lib.transform(xu)  # evaluate feature library
+                dsoh_dt = float(coeffs @ phi.T)
+                soh_pred[i] = soh_pred[i - 1] + dsoh_dt
+            except Exception:
+                soh_pred[i] = soh_pred[i - 1]  # hold last value on failure
+
+        soh_pred = soh_pred.clip(0.0, 1.15)
+        all_true.extend(soh_true)
+        all_pred.extend(soh_pred)
+
+    return np.array(all_true), np.array(all_pred)
+
+
 def run_sindy1(train_df, test_df):
     """SINDy-1: Polynomial library degree 2 + STLSQ."""
     print("\n[SINDy-1] Polynomial library (deg 2) + STLSQ")
@@ -191,8 +230,7 @@ def run_sindy1(train_df, test_df):
 
     train_cells = prepare_sindy_data(train_df)
 
-    # Use multiple_trajectories approach: pass list of arrays
-    t_list = [v[0] - v[0][0] for v in train_cells.values()]  # 0-based per cell
+    t_list = [v[0] - v[0][0] for v in train_cells.values()]
     X_list = [v[1] for v in train_cells.values()]
     u_list = [v[2] for v in train_cells.values()]
 
@@ -207,32 +245,9 @@ def run_sindy1(train_df, test_df):
     elapsed = time.time() - t0
     print(f"  Time: {elapsed:.1f}s")
 
-    # Predict on test cells
-    all_true, all_pred = [], []
-    for cell_id, grp in test_df.groupby('cell_id'):
-        grp = grp.sort_values('cycle_number').reset_index(drop=True)
-        t = grp['cycle_number'].values.astype(float)
-        t_norm = t - t[0]
-        u = grp[['Re', 'temp_max', 'capacity_fade',
-                  'voltage_mean', 'current_mean']].ffill().bfill().values
-        soh_true = grp['SOH'].values
-        x0 = soh_true[:1].reshape(-1, 1)
-
-        try:
-            if len(t_norm) > 1:
-                u_interp = interp1d(t_norm, u, axis=0, bounds_error=False, fill_value='extrapolate')
-                sol = model.simulate(x0.flatten(), t_norm, u=u_interp)
-                soh_pred = np.array(sol).flatten().clip(0, 1.1)
-            else:
-                soh_pred = np.array([float(x0[0])])
-        except Exception as e:
-            soh_pred = np.full(len(soh_true), float(np.nanmean(soh_true)))
-
-        all_true.extend(soh_true)
-        all_pred.extend(soh_pred[:len(soh_true)])
-
-    y_true = np.array(all_true)
-    y_pred = np.array(all_pred)
+    # Direct algebraic prediction — stable across all machines
+    control_cols = ['Re', 'temp_max', 'capacity_fade', 'voltage_mean', 'current_mean']
+    y_true, y_pred = _sindy_direct_predict(model, test_df, control_cols)
     mask = np.isfinite(y_pred)
     try:
         eq_str = str(model.equations())
@@ -255,9 +270,7 @@ def run_sindy2(train_df, test_df):
     X_list2 = [v[1] for v in train_cells.values()]
     u_list2 = [v[2] for v in train_cells.values()]
 
-    # Degree-3 polynomial library with lower threshold — more expressive than SINDy-1
     poly_lib = ps.PolynomialLibrary(degree=3, include_bias=True)
-
     opt = ps.STLSQ(threshold=0.0001, alpha=0.01)
     model = ps.SINDy(feature_library=poly_lib, optimizer=opt)
     model.fit(X_list2, t=t_list2, u=u_list2, feature_names=['SOH'])
@@ -268,32 +281,9 @@ def run_sindy2(train_df, test_df):
     elapsed = time.time() - t0
     print(f"  Time: {elapsed:.1f}s")
 
-    # Predict on test cells
-    all_true2, all_pred2 = [], []
-    for cell_id, grp in test_df.groupby('cell_id'):
-        grp = grp.sort_values('cycle_number').reset_index(drop=True)
-        t = grp['cycle_number'].values.astype(float)
-        t_norm = t - t[0]
-        u = grp[['Re', 'temp_max', 'capacity_fade',
-                  'voltage_mean', 'current_mean']].ffill().bfill().values
-        soh_true = grp['SOH'].values
-        x0 = soh_true[:1]
-
-        try:
-            if len(t_norm) > 1:
-                u_interp = interp1d(t_norm, u, axis=0, bounds_error=False, fill_value='extrapolate')
-                sol = model.simulate(x0, t_norm, u=u_interp)
-                soh_pred = np.array(sol).flatten().clip(0, 1.1)
-            else:
-                soh_pred = np.array([float(x0[0])])
-        except Exception:
-            soh_pred = np.full(len(soh_true), float(np.nanmean(soh_true)))
-
-        all_true2.extend(soh_true)
-        all_pred2.extend(soh_pred[:len(soh_true)])
-
-    y_true2 = np.array(all_true2)
-    y_pred2 = np.array(all_pred2)
+    # Direct algebraic prediction — stable across all machines
+    control_cols = ['Re', 'temp_max', 'capacity_fade', 'voltage_mean', 'current_mean']
+    y_true2, y_pred2 = _sindy_direct_predict(model, test_df, control_cols)
     mask = np.isfinite(y_pred2)
     try:
         eq_str2 = str(model.equations())
