@@ -43,6 +43,11 @@ EOL_THRESHOLD = 0.80
 RANDOM_SEED = 42
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
+# ─── Global seed for full reproducibility ────────────────────────────────────
+np.random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
+torch.use_deterministic_algorithms(True, warn_only=True)
+
 # Features to actually use
 USED_FEATURES = [
     'cycle_number', 'voltage_mean', 'voltage_drop',
@@ -120,8 +125,7 @@ def run_sr1(X_train, y_train, X_test, y_test, target='SOH'):
         max_samples=1.0,
         parsimony_coefficient=0.001,   # less penalty → more complex equations
         random_state=RANDOM_SEED,
-        n_jobs=-1,
-        verbose=0,
+        n_jobs=1,   # n_jobs=1 ensures deterministic output across all machines
     )
     sr1.fit(X_train, y_train)
     preds = sr1.predict(X_test).clip(0, 1.2)
@@ -151,8 +155,8 @@ def run_sr2(X_train, y_train, X_test, y_test, target='SOH'):
         p_point_mutation=0.1,
         max_samples=1.0,
         parsimony_coefficient=0.0005,
-        random_state=99,          # different seed from SR-1
-        n_jobs=-1,
+        random_state=RANDOM_SEED,  # aligned to global RANDOM_SEED
+        n_jobs=1,   # n_jobs=1 ensures deterministic output across all machines
         verbose=0,
     )
     sr2.fit(X_train, y_train)
@@ -380,7 +384,12 @@ def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100):
     y_tr = torch.FloatTensor(y_train_seq)
     X_te = torch.FloatTensor(X_test_seq)
 
-    train_loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=32, shuffle=True)
+    # Seed PyTorch for full reproducibility
+    torch.manual_seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+
+    train_loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=32, shuffle=True,
+                              generator=torch.Generator().manual_seed(RANDOM_SEED))
 
     # Build model
     model = LSTMModel(input_size=n_features)
