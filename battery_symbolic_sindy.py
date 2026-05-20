@@ -189,36 +189,35 @@ def prepare_sindy_data(df):
 
 
 def _sindy_direct_predict(model, test_df, control_cols):
-    """Predict SOH directly from SINDy feature library (no ODE integration).
+    """Predict SOH using explicit Euler integration of the SINDy equation.
     
-    This replaces model.simulate() with a stable point-wise algebraic
-    evaluation: SOH_pred[t] = SOH[t-1] + dt * (coeff @ feature_library(SOH[t-1], u[t-1]))
-    This is deterministic and numerically stable across all machines.
+    Uses the same math as model.simulate() but with a fixed-step Euler scheme
+    that is deterministic across all machines (no adaptive RK45 solver).
+    
+    SOH_pred[t] = SOH_pred[t-1] + dt * f(SOH_pred[t-1], u[t-1])
+    where f = coefficients @ feature_library(state, control)
     """
     all_true, all_pred = [], []
-    coeffs = model.coefficients()  # shape (1, n_features)
+    coeffs = model.coefficients()  # shape (1, n_library_features)
     lib = model.feature_library
 
     for cell_id, grp in test_df.groupby('cell_id'):
         grp = grp.sort_values('cycle_number').reset_index(drop=True)
         u = grp[control_cols].ffill().bfill().values
         soh_true = grp['SOH'].values
+        t = grp['cycle_number'].values.astype(float)
         n = len(soh_true)
 
         soh_pred = np.zeros(n)
         soh_pred[0] = soh_true[0]  # start from known true initial SOH
 
         for i in range(1, n):
-            # Build state-control matrix for this timestep
-            x_state = np.array([[soh_pred[i - 1]]])
-            u_state = u[i - 1:i]
-            try:
-                xu = np.hstack([x_state, u_state])
-                phi = lib.transform(xu)  # evaluate feature library
-                dsoh_dt = float(coeffs @ phi.T)
-                soh_pred[i] = soh_pred[i - 1] + dsoh_dt
-            except Exception:
-                soh_pred[i] = soh_pred[i - 1]  # hold last value on failure
+            dt = t[i] - t[i - 1]  # time step (in cycles)
+            # Build [state, control] row vector
+            xu = np.hstack([[soh_pred[i - 1]], u[i - 1]]).reshape(1, -1)
+            phi = lib.transform(xu)  # evaluate polynomial feature library
+            dsoh_dt = (coeffs @ phi.T)[0, 0]  # scalar: dSOH/dt
+            soh_pred[i] = soh_pred[i - 1] + dsoh_dt * dt
 
         soh_pred = soh_pred.clip(0.0, 1.15)
         all_true.extend(soh_true)
