@@ -1,16 +1,14 @@
 """
-Battery Degradation — Symbolic Regression (2 models) + PySINDy (2 models)
+Battery Degradation — SR + PySINDy + Baselines (RF, LSTM)
 Predicts SOH and RUL using NASA PCoE + CALCE CS2 datasets.
 
-Features: voltage, IR, cycle_number, capacity, current_profile, surface_temp,
-          capacity_fade, charge_duration
-Outputs:  SOH (State of Health), RUL (Remaining Useful Life in cycles)
-
 Models:
-  SR-1: gplearn SymbolicRegressor — basic operators (+,-,*,/)
-  SR-2: gplearn SymbolicRegressor — extended operators (sqrt, log, exp)
-  SINDy-1: PySINDy — polynomial feature library + STLSQ optimizer
-  SINDy-2: PySINDy — custom physics library + SR3 optimizer
+  SR-1:    gplearn SymbolicRegressor — basic operators
+  SR-2:    gplearn SymbolicRegressor — extended operators
+  SINDy-1: PySINDy — polynomial degree-2 + STLSQ
+  SINDy-2: PySINDy — polynomial degree-3 + STLSQ
+  RF:      Random Forest Regressor — sklearn ensemble baseline
+  LSTM:    Long Short-Term Memory — PyTorch sequential baseline
 """
 
 import numpy as np
@@ -26,11 +24,15 @@ warnings.filterwarnings('ignore')
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.ensemble import RandomForestRegressor
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 
 from gplearn.genetic import SymbolicRegressor
 import pysindy as ps
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
 from battery_data_loader import load_all_data, FEATURE_COLS
 
@@ -303,6 +305,152 @@ def run_sindy2(train_df, test_df):
     return model, y_pred2, m
 
 
+# ─── Random Forest Baseline ──────────────────────────────────────────────────
+
+def run_rf(X_train, y_train, X_test, y_test, target='SOH'):
+    """Random Forest Regressor — standard ML baseline."""
+    print(f"\n[RF] Random Forest — predicting {target}")
+    t0 = time.time()
+    rf = RandomForestRegressor(
+        n_estimators=200,
+        max_depth=10,
+        min_samples_split=5,
+        random_state=RANDOM_SEED,
+        n_jobs=-1,
+    )
+    rf.fit(X_train, y_train)
+    preds = rf.predict(X_test)
+    if target == 'SOH':
+        preds = preds.clip(0, 1.2)
+    elapsed = time.time() - t0
+    print(f"  Time: {elapsed:.1f}s")
+    m = metrics(y_test, preds, f"RF ({target})")
+    m['equation'] = 'Black-box ensemble (200 trees, depth 10)'
+    m['target'] = target
+    return rf, preds, m
+
+
+# ─── LSTM Baseline ───────────────────────────────────────────────────────────
+
+class LSTMModel(nn.Module):
+    """Simple 2-layer LSTM for battery SOH/RUL prediction."""
+    def __init__(self, input_size, hidden_size=64):
+        super().__init__()
+        self.lstm1 = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.lstm2 = nn.LSTM(hidden_size, 32, batch_first=True)
+        self.fc = nn.Linear(32, 1)
+
+    def forward(self, x):
+        out, _ = self.lstm1(x)
+        out, _ = self.lstm2(out)
+        out = self.fc(out[:, -1, :])  # take last timestep
+        return out.squeeze(-1)
+
+
+def prepare_lstm_sequences(df, feat_cols, target_col, window=10):
+    """Create sliding window sequences per cell for LSTM training."""
+    X_seqs, y_vals = [], []
+    for _, grp in df.groupby('cell_id'):
+        grp = grp.sort_values('cycle_number').reset_index(drop=True)
+        feats = grp[feat_cols].values
+        targets = grp[target_col].values
+        for i in range(window, len(grp)):
+            X_seqs.append(feats[i - window:i])
+            y_vals.append(targets[i])
+    return np.array(X_seqs) if X_seqs else np.array([]), np.array(y_vals) if y_vals else np.array([])
+
+
+def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100):
+    """Train and evaluate an LSTM model on battery time-series data."""
+    print(f"\n[LSTM] PyTorch LSTM — predicting {target}")
+    t0 = time.time()
+
+    # Prepare sliding window sequences
+    X_train_seq, y_train_seq = prepare_lstm_sequences(train_df, feat_cols, target, window)
+    X_test_seq, y_test_seq = prepare_lstm_sequences(test_df, feat_cols, target, window)
+
+    if len(X_train_seq) == 0 or len(X_test_seq) == 0:
+        print("  Warning: Not enough data for LSTM windowing, skipping.")
+        preds = np.full(len(test_df), np.nan)
+        m = {'model': f'LSTM ({target})', 'RMSE': np.nan, 'MAE': np.nan,
+             'R2': np.nan, 'MAPE': np.nan, 'equation': 'N/A', 'target': target}
+        return None, preds, m
+
+    # Normalize per-feature
+    n_features = X_train_seq.shape[2]
+    scaler = StandardScaler()
+    X_train_flat = X_train_seq.reshape(-1, n_features)
+    X_test_flat = X_test_seq.reshape(-1, n_features)
+    scaler.fit(X_train_flat)
+    X_train_seq = scaler.transform(X_train_flat).reshape(X_train_seq.shape)
+    X_test_seq = scaler.transform(X_test_flat).reshape(X_test_seq.shape)
+
+    # Convert to tensors
+    X_tr = torch.FloatTensor(X_train_seq)
+    y_tr = torch.FloatTensor(y_train_seq)
+    X_te = torch.FloatTensor(X_test_seq)
+
+    train_loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=32, shuffle=True)
+
+    # Build model
+    model = LSTMModel(input_size=n_features)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.MSELoss()
+
+    # Training loop with early stopping
+    best_loss = float('inf')
+    patience_counter = 0
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0
+        for xb, yb in train_loader:
+            optimizer.zero_grad()
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        avg_loss = epoch_loss / len(train_loader)
+        if avg_loss < best_loss - 1e-6:
+            best_loss = avg_loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+        if patience_counter >= 15:
+            print(f"  Early stop at epoch {epoch+1}")
+            break
+
+    # Predict
+    model.eval()
+    with torch.no_grad():
+        test_preds = model(X_te).numpy()
+    if target == 'SOH':
+        test_preds = test_preds.clip(0, 1.2)
+
+    elapsed = time.time() - t0
+    print(f"  Time: {elapsed:.1f}s  (epochs: {min(epoch+1, epochs)})")
+    m = metrics(y_test_seq, test_preds, f"LSTM ({target})")
+    m['equation'] = f'Black-box LSTM (64->32 units, window={window})'
+    m['target'] = target
+
+    # Pad predictions to match full test_df length
+    # First `window` rows per cell have no prediction
+    full_preds = np.full(len(test_df), np.nan)
+    idx = 0
+    for _, grp in test_df.groupby('cell_id'):
+        grp_sorted = grp.sort_values('cycle_number')
+        grp_len = len(grp_sorted)
+        n_preds = grp_len - window
+        if n_preds > 0 and idx + n_preds <= len(test_preds):
+            positions = grp_sorted.index[window:]
+            for j, pos in enumerate(positions):
+                loc = test_df.index.get_loc(pos)
+                full_preds[loc] = test_preds[idx + j]
+            idx += n_preds
+
+    return model, full_preds, m
+
+
 # ─── Plotting ────────────────────────────────────────────────────────────────
 
 PALETTE = {
@@ -310,6 +458,8 @@ PALETTE = {
     'SR-2':    '#F4A261',
     'SINDy-1': '#2A9D8F',
     'SINDy-2': '#457B9D',
+    'RF':      '#9B5DE5',
+    'LSTM':    '#00F5D4',
     'Actual':  '#264653',
 }
 
@@ -548,7 +698,27 @@ def main():
         'SINDy-2': pad(sindy2_preds, n_test),
     }
 
-    # 4. Build results table
+    # 4. Random Forest Baseline
+    print("\n" + "─" * 50)
+    print("RANDOM FOREST BASELINE")
+    print("─" * 50)
+
+    rf_model, rf_preds, m5 = run_rf(X_train, y_train_soh, X_test, y_test_soh, 'SOH')
+    all_metrics.append(m5)
+
+    rf_rul_model, rf_rul_preds, m5_rul = run_rf(X_train, y_train_rul, X_test, y_test_rul, 'RUL')
+    all_metrics.append(m5_rul)
+    rul_results['RF'] = (y_test_rul, rf_rul_preds)
+
+    # 5. LSTM Baseline
+    print("\n" + "─" * 50)
+    print("LSTM BASELINE")
+    print("─" * 50)
+
+    lstm_model, lstm_preds, m6 = run_lstm(train_df, test_df, SR_FEATURES, 'SOH', window=10)
+    all_metrics.append(m6)
+
+    # 6. Build results table
     print("\n" + "=" * 60)
     print("RESULTS SUMMARY — SOH Prediction")
     print("=" * 60)
@@ -560,7 +730,7 @@ def main():
     print("\nPER-DATASET SOH METRICS")
     print("─" * 60)
     print(f"{'Model':<15} {'Dataset':<8} {'RMSE':<8} {'MAE':<8} {'R2':<8}")
-    all_predictions = {**sr_predictions, **{k: v for k, v in sindy_preds.items()}}
+    all_predictions = {**sr_predictions, **sindy_preds, 'RF': rf_preds, 'LSTM': pad(lstm_preds, n_test)}
     for model_name, preds in all_predictions.items():
         if 'RUL' in model_name: continue
         for source in ['NASA', 'CALCE']:
