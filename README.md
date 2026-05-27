@@ -51,6 +51,18 @@ python3 reproduce_results.py
 ```
 *This uses the pre-computed predictions stored in `reports/saved_predictions.npz`.*
 
+### 5. Run 10-Fold Monte Carlo Robustness Study
+To evaluate the statistical reproducibility and seed sensitivity of all six models under stochastic variations, execute the robustness suite:
+```bash
+python3 run_robustness_study.py
+```
+This script performs a 10-fold Monte Carlo study across seeds `[10, 20, 30, 40, 50, 60, 70, 80, 90, 100]` for stochastic models (SR-1, SR-2, LSTM, RF) alongside deterministic evaluations for SINDy models.
+
+**Outputs generated in the `reports/` directory:**
+- `reports/robustness_summary.csv`: Performance summary showing Mean ± Standard Deviation of RMSE, MAE, R², and MAPE across all models.
+- `reports/robustness_raw_results.csv`: Complete raw evaluation metrics per seed.
+- `reports/robustness_error_bars.png`: Publication-ready bar charts with error bounds showing the three-tier stability structure.
+
 ## How to Run on Google Colab
 
 You can run this entire experiment in the cloud via Google Colab with zero local setup!

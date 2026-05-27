@@ -17,3 +17,7 @@ venv.bak/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+
+# Local LaTeX Paper
+battery_paper.tex
+*.tex.bak

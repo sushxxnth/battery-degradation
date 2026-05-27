@@ -109,9 +109,17 @@ def scale(train, test, feat_cols=None):
 
 # ─── Symbolic Regression ─────────────────────────────────────────────────────
 
-def run_sr1(X_train, y_train, X_test, y_test, target='SOH'):
+def run_sr1(X_train, y_train, X_test, y_test, target='SOH', seed=RANDOM_SEED):
     """SR-1: basic operators (+,-,*,/) with larger population."""
     print(f"\n[SR-1] gplearn basic — predicting {target}")
+    if target == 'SOH' and X_train.shape[1] > 1:
+        # Option A Fix: Isolate 'capacity_fade' (index 8 in SR_FEATURES/USED_FEATURES)
+        cf_idx = 8
+        if 'capacity_fade' in SR_FEATURES:
+            cf_idx = SR_FEATURES.index('capacity_fade')
+        print(f"  [Option A Feature Reduction] Isolating 'capacity_fade' (index {cf_idx}) to stabilize convergence.")
+        X_train = X_train[:, [cf_idx]]
+        X_test = X_test[:, [cf_idx]]
     t0 = time.time()
     sr1 = SymbolicRegressor(
         population_size=5000,
@@ -124,7 +132,7 @@ def run_sr1(X_train, y_train, X_test, y_test, target='SOH'):
         p_point_mutation=0.1,
         max_samples=1.0,
         parsimony_coefficient=0.001,   # less penalty → more complex equations
-        random_state=RANDOM_SEED,
+        random_state=seed,
         n_jobs=1,   # n_jobs=1 ensures deterministic output across all machines
     )
     sr1.fit(X_train, y_train)
@@ -138,7 +146,7 @@ def run_sr1(X_train, y_train, X_test, y_test, target='SOH'):
     return sr1, preds, m
 
 
-def run_sr2(X_train, y_train, X_test, y_test, target='SOH'):
+def run_sr2(X_train, y_train, X_test, y_test, target='SOH', seed=RANDOM_SEED):
     """SR-2: extended operators (sqrt, log, neg, abs) — physics-aware.
     Uses only the 2 most predictive features to force a non-trivial equation.
     """
@@ -155,7 +163,7 @@ def run_sr2(X_train, y_train, X_test, y_test, target='SOH'):
         p_point_mutation=0.1,
         max_samples=1.0,
         parsimony_coefficient=0.0005,
-        random_state=RANDOM_SEED,  # aligned to global RANDOM_SEED
+        random_state=seed,  # aligned to global RANDOM_SEED
         n_jobs=1,   # n_jobs=1 ensures deterministic output across all machines
         verbose=0,
     )
@@ -300,7 +308,7 @@ def run_sindy2(train_df, test_df):
 
 # ─── Random Forest Baseline ──────────────────────────────────────────────────
 
-def run_rf(X_train, y_train, X_test, y_test, target='SOH'):
+def run_rf(X_train, y_train, X_test, y_test, target='SOH', seed=RANDOM_SEED):
     """Random Forest Regressor — standard ML baseline."""
     print(f"\n[RF] Random Forest — predicting {target}")
     t0 = time.time()
@@ -308,7 +316,7 @@ def run_rf(X_train, y_train, X_test, y_test, target='SOH'):
         n_estimators=200,
         max_depth=10,
         min_samples_split=5,
-        random_state=RANDOM_SEED,
+        random_state=seed,
         n_jobs=-1,
     )
     rf.fit(X_train, y_train)
@@ -353,7 +361,7 @@ def prepare_lstm_sequences(df, feat_cols, target_col, window=10):
     return np.array(X_seqs) if X_seqs else np.array([]), np.array(y_vals) if y_vals else np.array([])
 
 
-def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100):
+def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100, seed=RANDOM_SEED):
     """Train and evaluate an LSTM model on battery time-series data."""
     print(f"\n[LSTM] PyTorch LSTM — predicting {target}")
     t0 = time.time()
@@ -384,11 +392,11 @@ def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100):
     X_te = torch.FloatTensor(X_test_seq)
 
     # Seed PyTorch for full reproducibility
-    torch.manual_seed(RANDOM_SEED)
-    np.random.seed(RANDOM_SEED)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     train_loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=32, shuffle=True,
-                              generator=torch.Generator().manual_seed(RANDOM_SEED))
+                              generator=torch.Generator().manual_seed(seed))
 
     # Build model
     model = LSTMModel(input_size=n_features)
