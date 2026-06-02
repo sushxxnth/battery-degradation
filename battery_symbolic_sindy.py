@@ -420,19 +420,19 @@ def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100, 
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-        avg_loss = epoch_loss / len(train_loader)
+        avg_batch_loss = epoch_loss / len(train_loader)
         
-        # Validation loss evaluation
+        # Evaluate both train and val loss with a clean forward pass (no gradients)
         model.eval()
         with torch.no_grad():
-            val_pred = model(X_te)
-            val_loss = loss_fn(val_pred, y_te).item()
+            train_eval_loss = loss_fn(model(X_tr), y_tr).item()
+            val_eval_loss = loss_fn(model(X_te), y_te).item()
             
-        train_losses.append(avg_loss)
-        val_losses.append(val_loss)
+        train_losses.append(train_eval_loss)
+        val_losses.append(val_eval_loss)
         
-        if avg_loss < best_loss - 1e-6:
-            best_loss = avg_loss
+        if avg_batch_loss < best_loss - 1e-6:
+            best_loss = avg_batch_loss
             patience_counter = 0
         else:
             patience_counter += 1
@@ -441,17 +441,23 @@ def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100, 
             break
 
     # Save training convergence plot
-    plt.figure(figsize=(6, 4))
-    plt.plot(range(1, len(train_losses) + 1), train_losses, 'b-', label='Train Loss (MSE)')
-    plt.plot(range(1, len(val_losses) + 1), val_losses, 'r-', label='Val Loss (MSE)')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss (MSE)')
-    plt.title('LSTM Model Training Convergence')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(REPORTS_DIR, 'lstm_training_curve.png'), dpi=150)
-    plt.close()
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    epochs_range = range(1, len(train_losses) + 1)
+    ax.plot(epochs_range, train_losses, color='#1f77b4', linewidth=1.8, label='Training Loss')
+    ax.plot(epochs_range, val_losses, color='#d62728', linewidth=1.8, linestyle='--', label='Validation Loss')
+    ax.set_xlabel('Epoch', fontsize=12)
+    ax.set_ylabel('Loss (MSE)', fontsize=12)
+    ax.set_title('LSTM Training Convergence', fontsize=13, fontweight='bold')
+    ax.legend(fontsize=11, framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(1, len(train_losses))
+    # Use log scale if losses span >2 orders of magnitude, otherwise linear
+    if max(train_losses[0], val_losses[0]) / max(min(train_losses[-1], val_losses[-1]), 1e-10) > 100:
+        ax.set_yscale('log')
+        ax.set_ylabel('Loss (MSE, log scale)', fontsize=12)
+    fig.tight_layout()
+    fig.savefig(os.path.join(REPORTS_DIR, 'lstm_training_curve.png'), dpi=200)
+    plt.close(fig)
 
     # Predict
     model.eval()
