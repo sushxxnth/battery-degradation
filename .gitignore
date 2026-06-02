@@ -21,3 +21,6 @@ venv.bak/
 # Local LaTeX Paper
 battery_paper.tex
 *.tex.bak
+
+# Large Data files
+data/

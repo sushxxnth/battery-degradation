@@ -406,6 +406,10 @@ def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100, 
     # Training loop with early stopping
     best_loss = float('inf')
     patience_counter = 0
+    y_te = torch.FloatTensor(y_test_seq)
+    train_losses = []
+    val_losses = []
+    
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0
@@ -417,6 +421,16 @@ def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100, 
             optimizer.step()
             epoch_loss += loss.item()
         avg_loss = epoch_loss / len(train_loader)
+        
+        # Validation loss evaluation
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X_te)
+            val_loss = loss_fn(val_pred, y_te).item()
+            
+        train_losses.append(avg_loss)
+        val_losses.append(val_loss)
+        
         if avg_loss < best_loss - 1e-6:
             best_loss = avg_loss
             patience_counter = 0
@@ -425,6 +439,19 @@ def run_lstm(train_df, test_df, feat_cols, target='SOH', window=10, epochs=100, 
         if patience_counter >= 15:
             print(f"  Early stop at epoch {epoch+1}")
             break
+
+    # Save training convergence plot
+    plt.figure(figsize=(6, 4))
+    plt.plot(range(1, len(train_losses) + 1), train_losses, 'b-', label='Train Loss (MSE)')
+    plt.plot(range(1, len(val_losses) + 1), val_losses, 'r-', label='Val Loss (MSE)')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss (MSE)')
+    plt.title('LSTM Model Training Convergence')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(REPORTS_DIR, 'lstm_training_curve.png'), dpi=150)
+    plt.close()
 
     # Predict
     model.eval()
